@@ -27,6 +27,14 @@
         android:text="Logout"
         android:layout_toEndOf="@+id/distance_results_button" />
 
+    <TextView
+        android:id="@+id/detected_activities_textview"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="****motion-status****"
+        android:textSize="15sp"
+        android:layout_toEndOf="@+id/logout_button"/>
+
     <ScrollView
         android:id="@+id/distance_results_scroll"
         android:layout_width="wrap_content"

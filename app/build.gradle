@@ -29,4 +29,10 @@ dependencies {
 
     compile 'io.realm:realm-android:0.84.1'
 
+    compile 'io.reactivex:rxandroid:1.1.0'
+    // Because RxAndroid releases are few and far between, it is
+    // recommended you also explicitly depend on RxJava's latest version
+    // for bug fixes and new features.
+    compile 'io.reactivex:rxjava:1.1.3'
+
 }

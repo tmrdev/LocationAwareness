@@ -1,8 +1,12 @@
 package org.tmreynolds.humanproject;
 
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
@@ -11,6 +15,7 @@ import android.support.annotation.NonNull;
 import android.support.design.widget.FloatingActionButton;
 import android.support.design.widget.Snackbar;
 import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.LocalBroadcastManager;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
@@ -20,25 +25,42 @@ import android.widget.Toast;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.common.api.Status;
+import com.google.android.gms.location.ActivityRecognition;
+import com.google.android.gms.location.DetectedActivity;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 
 import org.tmreynolds.humanproject.models.Distance;
+import org.tmreynolds.humanproject.utils.ActivitiesIntentService;
+import org.tmreynolds.humanproject.utils.Constants;
 
 import java.io.File;
 import java.text.DateFormat;
+import java.util.ArrayList;
 import java.util.Date;
 
 import io.realm.Realm;
 import io.realm.RealmConfiguration;
 import io.realm.RealmResults;
+import rx.Observable;
+import rx.Single;
+import rx.SingleSubscriber;
+import rx.Subscriber;
+import rx.Subscription;
+import rx.android.schedulers.AndroidSchedulers;
+import rx.functions.Action1;
+import rx.schedulers.Schedulers;
 
 public class MainActivity extends AppCompatActivity implements
-        GoogleApiClient.OnConnectionFailedListener, GoogleApiClient.ConnectionCallbacks, com.google.android.gms.location.LocationListener {
+        GoogleApiClient.OnConnectionFailedListener, GoogleApiClient.ConnectionCallbacks,
+        com.google.android.gms.location.LocationListener, ResultCallback<Status> {
 
     protected static final String TAG = "location-updates-sample";
+
     // The desired interval for location updates. Inexact. Updates may be more or less frequent.
-    public static final long UPDATE_INTERVAL_IN_MILLISECONDS = 3000;
+    public static final long UPDATE_INTERVAL_IN_MILLISECONDS = 20000;
 
     /**
      * The fastest rate for active location updates. Exact. Updates will never be more frequent
@@ -57,6 +79,9 @@ public class MainActivity extends AppCompatActivity implements
     protected LocationRequest mLocationRequest;
     protected Location mCurrentLocation;
 
+    // for detecting user motion
+    private ActivityDetectionBroadcastReceiver mBroadcastReceiver;
+
     //Tracks the status of the location updates request.
     protected Boolean mRequestingLocationUpdates;
     //Time when the location was updated represented as a String.
@@ -68,6 +93,11 @@ public class MainActivity extends AppCompatActivity implements
     private TextView distanceResults;
     private Button distanceButtonResults;
 
+    // NOTE: ****** dev testing remove *****
+    private TextView mDetectedActivityTextView;
+
+    private static float testDistance;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -76,6 +106,11 @@ public class MainActivity extends AppCompatActivity implements
         //setSupportActionBar(toolbar);
 
         distanceResults = (TextView) findViewById(R.id.distance_results);
+        // dev testing remove **********************************
+        mDetectedActivityTextView = (TextView) findViewById(R.id.detected_activities_textview);
+
+        mBroadcastReceiver = new ActivityDetectionBroadcastReceiver();
+
         distanceButtonResults = (Button) findViewById(R.id.distance_results_button);
         distanceButtonResults.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -84,11 +119,19 @@ public class MainActivity extends AppCompatActivity implements
                 //RealmResults<Distance> results1 = myRealm.where(Distance.class).findAll();
                 RealmResults<Distance> sorted = myRealm.where(Distance.class).findAllSorted("lastUpdated", false);
                 String dbResults = "";
-                for(Distance d:sorted) {
-                    Log.d("results1", d.getLastUpdated().toString() + " : " + d.getLongitude() + " : " + d.getLatitude());
-                    dbResults+=d.getLastUpdated().toString().substring(0,19) + " : " + d.getLongitude() + " : " + d.getLatitude() + "\n";
+                for (Distance d : sorted) {
+                    //Log.d("results1", d.getLastUpdated().toString() + " : " + d.getLongitude() + " : " + d.getLatitude());
+                    //dbResults+=d.getLastUpdated().toString().substring(0,19) + " : " + d.getLongitude() + " : " + d.getLatitude() + "\n";
+
+                    // test distance
                 }
-                distanceResults.setText(dbResults);
+                //distanceResults.setText(dbResults);
+
+                // quick test of distance
+                int tD = (int) MainActivity.testDistance;
+                String blah = new String(String.valueOf(MainActivity.testDistance));
+                distanceResults.setText(blah);
+                Log.i(TAG, "current distance: td-> " + blah + " : ");
             }
         });
 
@@ -96,8 +139,8 @@ public class MainActivity extends AppCompatActivity implements
          * Login Check
          */
         if (!isLoggedIn) {
-           // Intent loginActivity = new Intent(this, LoginActivity.class);
-           // startActivityForResult(loginActivity, 9999);
+            // Intent loginActivity = new Intent(this, LoginActivity.class);
+            // startActivityForResult(loginActivity, 9999);
         }
 
         buildGoogleApiClient();
@@ -108,29 +151,20 @@ public class MainActivity extends AppCompatActivity implements
         // Kick off the process of building a GoogleApiClient and requesting the LocationServices
         // API.
 
-
-        FloatingActionButton fab = (FloatingActionButton) findViewById(R.id.fab);
-        fab.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                Snackbar.make(view, "Replace with your own action", Snackbar.LENGTH_LONG)
-                        .setAction("Action", null).show();
-            }
-        });
-
         myRealm = Realm.getInstance(this);
 
         mRequestingLocationUpdates = true;
-        if(mGoogleApiClient.isConnected()) {
+        if (mGoogleApiClient.isConnected()) {
             startLocationUpdates();
-            //Log.i(TAG, "longitude--" + mCurrentLocation.getLongitude());
+
         } else {
-            //display in short period of time
-            Toast.makeText(getApplicationContext(), "syncing location...", Toast.LENGTH_SHORT).show();
+            // sleep to allow location updates to provide, also testing issues with starting ActivityRecognition
             try {
                 Thread.sleep(5000);
-                if(mGoogleApiClient.isConnected()) {
+                if (mGoogleApiClient.isConnected()) {
                     startLocationUpdates();
+                    // start ActivityRecognition, need to manage lifecycle start and stop also
+                    requestActivityUpdates();
                     //Log.i(TAG, "longitude--" + mCurrentLocation.getLongitude());
                 }
             } catch (InterruptedException e) {
@@ -138,7 +172,34 @@ public class MainActivity extends AppCompatActivity implements
                 e.printStackTrace();
             }
         }
+
+        myObservable.subscribe(mySubscriber);
     }
+
+    Observable<String> myObservable = Observable.create(
+            new Observable.OnSubscribe<String>() {
+                @Override
+                public void call(Subscriber<? super String> sub) {
+                    sub.onNext("Hello, world!");
+                    sub.onCompleted();
+                }
+            }
+    );
+
+
+    Subscriber<String> mySubscriber = new Subscriber<String>() {
+        @Override
+        public void onNext(String s) {
+            //System.out.println(s);
+            Log.i(TAG, "dump string -> " + s);
+        }
+
+        @Override
+        public void onCompleted() { }
+
+        @Override
+        public void onError(Throwable e) { }
+    };
 
     /**
      * Builds a GoogleApiClient. Uses the {@code #addApi} method to request the
@@ -149,10 +210,90 @@ public class MainActivity extends AppCompatActivity implements
         mGoogleApiClient = new GoogleApiClient.Builder(this)
                 .addConnectionCallbacks(this)
                 .addOnConnectionFailedListener(this)
+                .addApi(ActivityRecognition.API)
                 .addApi(LocationServices.API)
                 .build();
         createLocationRequest();
     }
+
+    // start methods and subclass for ActivityRecognition motion detection
+    public String getDetectedActivity(int detectedActivityType) {
+        Resources resources = this.getResources();
+        switch(detectedActivityType) {
+            case DetectedActivity.IN_VEHICLE:
+                return resources.getString(R.string.in_vehicle);
+            case DetectedActivity.ON_BICYCLE:
+                return resources.getString(R.string.on_bicycle);
+            case DetectedActivity.ON_FOOT:
+                return resources.getString(R.string.on_foot);
+            case DetectedActivity.RUNNING:
+                return resources.getString(R.string.running);
+            case DetectedActivity.WALKING:
+                return resources.getString(R.string.walking);
+            case DetectedActivity.STILL:
+                return resources.getString(R.string.still);
+            case DetectedActivity.TILTING:
+                return resources.getString(R.string.tilting);
+            case DetectedActivity.UNKNOWN:
+                return resources.getString(R.string.unknown);
+            default:
+                return resources.getString(R.string.unidentifiable_activity, detectedActivityType);
+        }
+    }
+
+    @Override
+    public void onResult(@NonNull Status status) {
+        if (status.isSuccess()) {
+            Log.e(TAG, "Successfully added activity detection.");
+
+        } else {
+            Log.e(TAG, "Error: " + status.getStatusMessage());
+        }
+    }
+
+    public class ActivityDetectionBroadcastReceiver extends BroadcastReceiver {
+
+        public ActivityDetectionBroadcastReceiver() {
+            Log.i(TAG, "current distance: activity detection broadcast constructor hit");
+        }
+
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            ArrayList<DetectedActivity> detectedActivities = intent.getParcelableArrayListExtra(Constants.STRING_EXTRA);
+            String activityString = "";
+            for(DetectedActivity activity: detectedActivities){
+                activityString +=  "Activity: " + getDetectedActivity(activity.getType()) + ", Confidence: " + activity.getConfidence() + "%\n";
+            }
+            Log.i(TAG, "current distance: motion ->" + activityString);
+            mDetectedActivityTextView.setText(activityString);
+        }
+    }
+
+    public void requestActivityUpdates() {
+        Log.i(TAG, "current distance: requestActivityUpdates top");
+        if (!mGoogleApiClient.isConnected()) {
+            Log.i(TAG, "current distance: requestActivityUpdates api not connected");
+            Toast.makeText(this, "GoogleApiClient not yet connected", Toast.LENGTH_SHORT).show();
+        } else {
+            Log.i(TAG, "current distance: requestActivityUpdates api client connected");
+            // 2nd param sets interval time in milisecons
+            ActivityRecognition.ActivityRecognitionApi.requestActivityUpdates(mGoogleApiClient, Constants.DETECTION_INTERVAL_IN_MILLISECONDS,
+                    getActivityDetectionPendingIntent()).setResultCallback(this);
+        }
+    }
+
+    public void removeActivityUpdates() {
+        ActivityRecognition.ActivityRecognitionApi.removeActivityUpdates(mGoogleApiClient,
+                getActivityDetectionPendingIntent()).setResultCallback(this);
+    }
+
+    private PendingIntent getActivityDetectionPendingIntent() {
+        Intent intent = new Intent(this, ActivitiesIntentService.class);
+
+        return PendingIntent.getService(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
+    }
+
+    // end methods and subclass for ActivityRecognition - motion
 
     /**
      * Updates fields based on data stored in the bundle.
@@ -201,11 +342,18 @@ public class MainActivity extends AppCompatActivity implements
 
         if (mGoogleApiClient.isConnected() && mRequestingLocationUpdates) {
             startLocationUpdates();
+            requestActivityUpdates();
         }
+
+        // for ActivityRecognition motion
+        LocalBroadcastManager.getInstance(this).registerReceiver(mBroadcastReceiver, new IntentFilter(Constants.STRING_ACTION));
+
     }
 
     @Override
     protected void onPause() {
+        // Activity Recognition
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(mBroadcastReceiver);
         super.onPause();
         // Stop location updates to save battery, but don't disconnect the GoogleApiClient object.
         if (mGoogleApiClient.isConnected()) {
@@ -216,7 +364,6 @@ public class MainActivity extends AppCompatActivity implements
     @Override
     protected void onStop() {
         mGoogleApiClient.disconnect();
-
         super.onStop();
     }
 
@@ -239,6 +386,7 @@ public class MainActivity extends AppCompatActivity implements
     @Override
     public void onConnected(Bundle connectionHint) {
         Log.i(TAG, "Connected to GoogleApiClient");
+        requestActivityUpdates();
 
         // If the initial location was never previously requested, we use
         // FusedLocationApi.getLastLocation() to get it. If it was previously requested, we store
@@ -286,10 +434,22 @@ public class MainActivity extends AppCompatActivity implements
         // application will never receive updates faster than this value.
         mLocationRequest.setFastestInterval(FASTEST_UPDATE_INTERVAL_IN_MILLISECONDS);
 
-        //mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
-        mLocationRequest.setPriority(LocationRequest.PRIORITY_BALANCED_POWER_ACCURACY);
+        mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        //mLocationRequest.setPriority(LocationRequest.PRIORITY_BALANCED_POWER_ACCURACY);
     }
 
+
+    private void getDistance(RealmResults<Distance> pastLocation, Location mCurrentLocation) {
+        Location mediaLocation = new Location("assignment-location");
+        // distance will be in meters and will need to converted to feet
+        float [] dist = new float[1];
+        float distanceBetweenInFeet;
+        mediaLocation.distanceBetween(pastLocation.last().getLatitude(), pastLocation.last().getLongitude(),
+                mCurrentLocation.getLatitude(), mCurrentLocation.getLongitude(), dist);
+        distanceBetweenInFeet = (float) (dist[0] * 3.28084);
+        MainActivity.testDistance = distanceBetweenInFeet;
+        Log.i(TAG, "current distance: " + distanceBetweenInFeet);
+    }
 
     /**
      * Callback that fires when the location changes.
@@ -297,25 +457,24 @@ public class MainActivity extends AppCompatActivity implements
     @Override
     public void onLocationChanged(Location location) {
         mCurrentLocation = location;
-
+        mLastUpdateTime = DateFormat.getTimeInstance().format(new Date());
         // *** NOTE *** Below code will bomb if proper checks are not done to ensure
         // the database and entry exist
         RealmConfiguration config = myRealm.getConfiguration();
+        RealmResults<Distance> sorted = null;
         if (new File(config.getPath()).exists()) {
             // exists
             myRealm.beginTransaction();
-            RealmResults<Distance> sorted = myRealm.where(Distance.class)
-                    .findAllSorted("lastUpdated", true);
-
-            //(sorted.last().getLastUpdated()!=null) {
-               Log.i(TAG, "sort -> " + sorted.last().getLastUpdated());
-            //}
-
-            mLastUpdateTime = DateFormat.getTimeInstance().format(new Date());
-            Log.i(TAG, " loc->" + location.getLongitude() + " last updated -> " + mLastUpdateTime);
+            sorted = myRealm.where(Distance.class).findAllSorted("lastUpdated", true);
+            // db might exist but still need to check if last record exists
+            //Log.i(TAG, "sort -> " + sorted.last().getLastUpdated());
+            if(sorted != null && sorted.size() > 0) {
+                getDistance(sorted, mCurrentLocation);
+            }
             myRealm.commitTransaction();
+
         } else {
-            //
+            Log.i(TAG, "****** realm db does not exist ****");
         }
 
 
@@ -334,12 +493,12 @@ public class MainActivity extends AppCompatActivity implements
          */
         // Create an object
         myRealm.beginTransaction();
+        Log.i(TAG, " loc->" + location.getLongitude() + " last updated -> " + mLastUpdateTime);
         Distance distance = myRealm.createObject(Distance.class);
         // Set its fields
         distance.setLastUpdated(new Date());
         distance.setLatitude(mCurrentLocation.getLatitude());
         distance.setLongitude(mCurrentLocation.getLongitude());
-
         myRealm.commitTransaction();
 
     }
